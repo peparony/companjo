@@ -50,7 +50,7 @@ Wenn du Companjo magst, freuen wir uns über Feedback, Sterne und Ideen!
 Du kannst helfen durch:
 - ⭐ GitHub-Stern geben
 - 🐞 Issues melden oder Pull Requests einreichen
-- ☕ [Kaffee spenden](https://buymeacoffee.com/deinname)
+<!--// ☕ [Kaffee spenden](https://buymeacoffee.com/deinname) //-->
 
 ---
 
