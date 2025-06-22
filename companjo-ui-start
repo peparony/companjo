@@ -3,6 +3,8 @@ import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'models/task.dart';
 import 'services/storage_service.dart';
 
@@ -192,6 +194,32 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
     }
   }
 
+  Future<void> _generateTaskWithAI() async {
+    final response = await http.post(
+      Uri.parse('https://api.openai.com/v1/chat/completions'),
+      headers: {
+        'Authorization': 'Bearer YOUR_OPENAI_API_KEY',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'model': 'gpt-4',
+        'messages': [
+          {'role': 'system', 'content': 'Du bist ein produktiver Aufgabenhelfer.'},
+          {'role': 'user', 'content': 'Was sollte ich heute draußen erledigen?'}
+        ],
+        'max_tokens': 50
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final aiText = data['choices'][0]['message']['content'];
+      setState(() => _controller.text = aiText);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Fehler bei AI: ${response.statusCode}')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -227,6 +255,12 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
                       ? 'Hole Standort...'
                       : 'Ort hinzufügen'),
               onPressed: _addingLocation ? null : _getLocation,
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.flash_auto),
+              label: const Text('AI-Vorschlag holen'),
+              onPressed: _generateTaskWithAI,
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
