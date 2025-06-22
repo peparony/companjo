@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'models/task.dart';
 import 'services/storage_service.dart';
 
@@ -181,6 +182,14 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
   final TextEditingController _radiusController = TextEditingController(text: '50');
   bool _addingLocation = false;
   Position? _location;
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _speech = stt.SpeechToText();
+  }
 
   Future<void> _getLocation() async {
     setState(() => _addingLocation = true);
@@ -192,6 +201,25 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
     } finally {
       setState(() => _addingLocation = false);
     }
+  }
+
+  Future<void> _startListening() async {
+    bool available = await _speech.initialize();
+    if (available) {
+      setState(() => _isListening = true);
+      _speech.listen(onResult: (val) {
+        setState(() {
+          _controller.text = val.recognizedWords;
+        });
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Spracheingabe nicht verfügbar')));
+    }
+  }
+
+  Future<void> _stopListening() async {
+    setState(() => _isListening = false);
+    await _speech.stop();
   }
 
   Future<void> _generateTaskWithAI() async {
@@ -262,6 +290,12 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
               label: const Text('AI-Vorschlag holen'),
               onPressed: _generateTaskWithAI,
             ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: Icon(_isListening ? Icons.stop : Icons.mic),
+              label: Text(_isListening ? 'Stoppen' : 'Spracheingabe starten'),
+              onPressed: _isListening ? _stopListening : _startListening,
+            ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
               icon: const Icon(Icons.check),
@@ -280,12 +314,6 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
                   Navigator.pop(context, true);
                 }
               },
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.mic),
-              label: const Text('Spracheingabe starten'),
-              onPressed: () {},
             ),
           ],
         ),
