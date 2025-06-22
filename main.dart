@@ -1,9 +1,324 @@
+import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'dart:async';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'models/task.dart';
+import 'services/storage_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final appDocDir = await getApplicationDocumentsDirectory();
-  Hive.init(appDocDir.path);
+  await Hive.initFlutter();
   Hive.registerAdapter(TaskAdapter());
-  await Hive.openBox<Task>('tasks');
+  await StorageService.init();
 
   runApp(CompanjoApp());
 }
+
+class CompanjoApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Companjo',
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF121212),
+        primarySwatch: Colors.teal,
+        cardColor: const Color(0xFF1E1E1E),
+        textTheme: const TextTheme(
+          bodyMedium: TextStyle(color: Colors.white, fontSize: 16),
+        ),
+      ),
+      home: HomeScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  @override
+  _HomeScreenState createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  late List<Task> tasks;
+  StreamSubscription<Position>? _positionStream;
+
+  @override
+  void initState() {
+    super.initState();
+    tasks = StorageService.getAllTasks();
+    _startLocationMonitoring();
+  }
+
+  void _refreshTasks() {
+    setState(() {
+      tasks = StorageService.getAllTasks();
+    });
+  }
+
+  void _toggleTaskDone(int index) async {
+    await StorageService.toggleTaskDone(index);
+    _refreshTasks();
+  }
+
+  void _deleteTask(int index) async {
+    await StorageService.deleteTask(index);
+    _refreshTasks();
+  }
+
+  void _startLocationMonitoring() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission != LocationPermission.whileInUse &&
+          permission != LocationPermission.always) return;
+    }
+
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(distanceFilter: 10),
+    ).listen((Position position) {
+      for (int i = 0; i < tasks.length; i++) {
+        final task = tasks[i];
+        if (task.latitude != null && task.longitude != null && task.radiusMeters != null && !task.isDone) {
+          final distance = Geolocator.distanceBetween(
+            position.latitude,
+            position.longitude,
+            task.latitude!,
+            task.longitude!,
+          );
+          if (distance <= task.radiusMeters!) {
+            _toggleTaskDone(i);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Aufgabe "${task.title}" in der Nähe erledigt.')),
+            );
+          }
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _positionStream?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Companjo'),
+        centerTitle: true,
+      ),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: tasks.length,
+        itemBuilder: (context, index) {
+          final task = tasks[index];
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Card(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: ListTile(
+                title: Text(
+                  task.title,
+                  style: TextStyle(
+                    decoration: task.isDone ? TextDecoration.lineThrough : null,
+                  ),
+                ),
+                subtitle: (task.latitude != null && task.longitude != null)
+                    ? Text('Ort: (${task.latitude?.toStringAsFixed(4)}, ${task.longitude?.toStringAsFixed(4)}) - Radius: ${task.radiusMeters ?? 0}m')
+                    : null,
+                trailing: Wrap(
+                  spacing: 8,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        task.isDone ? Icons.check_circle : Icons.radio_button_unchecked,
+                      ),
+                      onPressed: () => _toggleTaskDone(index),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _deleteTask(index),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          final result = await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => NewTaskScreen()),
+          );
+          if (result == true) _refreshTasks();
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+class NewTaskScreen extends StatefulWidget {
+  @override
+  _NewTaskScreenState createState() => _NewTaskScreenState();
+}
+
+class _NewTaskScreenState extends State<NewTaskScreen> {
+  final TextEditingController _controller = TextEditingController();
+  final TextEditingController _radiusController = TextEditingController(text: '50');
+  bool _addingLocation = false;
+  Position? _location;
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _speech = stt.SpeechToText();
+  }
+
+  Future<void> _getLocation() async {
+    setState(() => _addingLocation = true);
+    try {
+      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      setState(() => _location = position);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Standort nicht verfügbar')));
+    } finally {
+      setState(() => _addingLocation = false);
+    }
+  }
+
+  Future<void> _startListening() async {
+    bool available = await _speech.initialize();
+    if (available) {
+      setState(() => _isListening = true);
+      _speech.listen(onResult: (val) {
+        setState(() {
+          _controller.text = val.recognizedWords;
+        });
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Spracheingabe nicht verfügbar')));
+    }
+  }
+
+  Future<void> _stopListening() async {
+    setState(() => _isListening = false);
+    await _speech.stop();
+  }
+
+  Future<void> _generateTaskWithAI() async {
+    final response = await http.post(
+      Uri.parse('https://api.openai.com/v1/chat/completions'),
+      headers: {
+        'Authorization': 'Bearer YOUR_OPENAI_API_KEY',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'model': 'gpt-4',
+        'messages': [
+          {'role': 'system', 'content': 'Du bist ein produktiver Aufgabenhelfer.'},
+          {'role': 'user', 'content': 'Was sollte ich heute draußen erledigen?'}
+        ],
+        'max_tokens': 50
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final aiText = data['choices'][0]['message']['content'];
+      setState(() => _controller.text = aiText);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Fehler bei AI: ${response.statusCode}')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Neue Aufgabe')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _controller,
+              decoration: const InputDecoration(
+                hintText: 'Was willst du erledigen?',
+                hintStyle: TextStyle(color: Colors.grey),
+              ),
+              style: const TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _radiusController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                hintText: 'Radius in Metern (z. B. 50)',
+                hintStyle: TextStyle(color: Colors.grey),
+              ),
+              style: const TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.my_location),
+              label: Text(_location != null
+                  ? 'Ort gesetzt'
+                  : _addingLocation
+                      ? 'Hole Standort...'
+                      : 'Ort hinzufügen'),
+              onPressed: _addingLocation ? null : _getLocation,
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.flash_auto),
+              label: const Text('AI-Vorschlag holen'),
+              onPressed: _generateTaskWithAI,
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: Icon(_isListening ? Icons.stop : Icons.mic),
+              label: Text(_isListening ? 'Stoppen' : 'Spracheingabe starten'),
+              onPressed: _isListening ? _stopListening : _startListening,
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.check),
+              label: const Text('Aufgabe speichern'),
+              onPressed: () async {
+                final text = _controller.text.trim();
+                final radius = double.tryParse(_radiusController.text.trim());
+                if (text.isNotEmpty) {
+                  final task = Task(
+                    title: text,
+                    latitude: _location?.latitude,
+                    longitude: _location?.longitude,
+                    radiusMeters: radius,
+                  );
+                  await StorageService.addTask(task);
+                  Navigator.pop(context, true);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
