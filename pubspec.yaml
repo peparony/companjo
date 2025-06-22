@@ -1,0 +1,7 @@
+dependencies:
+  flutter:
+    sdk: flutter
+  speech_to_text: ^6.3.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.0.15
